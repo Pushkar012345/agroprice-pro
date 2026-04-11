@@ -1,25 +1,101 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const mandiData = require('./mandiData.json');
+const { Pool } = require('pg');
+const { PrismaPg } = require('@prisma/adapter-pg');
+const { PrismaClient } = require('@prisma/client');
+const axios = require('axios');
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Endpoint to get all prices
-app.get('/api/prices', (req, res) => {
-  res.json(mandiData);
+const mapPrice = (p) => ({
+  ...p,
+  modal_price: p.modalPrice,
+  min_price: p.minPrice,
+  max_price: p.maxPrice,
 });
 
-// Endpoint to filter by district
-app.get('/api/prices/:district', (req, res) => {
-  const filtered = mandiData.filter(item => 
-    item.district.toLowerCase() === req.params.district.toLowerCase()
-  );
-  res.json(filtered);
+// 1. Get ALL prices
+app.get('/api/prices', async (req, res) => {
+  try {
+    const prices = await prisma.marketPrice.findMany();
+    res.json(prices.map(mapPrice));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
+// 2. Get price history - MUST be before /:district
+app.get('/api/prices/:id/history', async (req, res) => {
+  try {
+    const history = await prisma.priceHistory.findMany({
+      where: { marketPriceId: parseInt(req.params.id) },
+      orderBy: { recordedAt: 'asc' },
+    });
+    res.json(history.map(h => ({
+      ...h,
+      modal_price: h.modalPrice,
+      min_price: h.minPrice,
+      max_price: h.maxPrice,
+      date: new Date(h.recordedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+    })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
+// 3. Filter by district - MUST be last
+app.get('/api/prices/:district', async (req, res) => {
+  try {
+    const prices = await prisma.marketPrice.findMany({
+      where: { district: { equals: req.params.district, mode: 'insensitive' } }
+    });
+    res.json(prices.map(mapPrice));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Sync live Maharashtra prices from data.gov.in
+app.get('/api/sync', async (req, res) => {
+  try {
+    const url = `https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070?api-key=${process.env.DATA_GOV_API_KEY}&format=json&filters%5Bstate%5D=Maharashtra&limit=100`;
+    const { data } = await axios.get(url);
+
+    if (!data.records || data.records.length === 0) {
+      return res.json({ message: 'No records returned from API' });
+    }
+
+    let count = 0;
+    for (const record of data.records) {
+      const modal = parseFloat(record.modal_price);
+      const min   = parseFloat(record.min_price);
+      const max   = parseFloat(record.max_price);
+      if (!record.commodity || !record.market || isNaN(modal)) continue;
+
+      await prisma.marketPrice.create({
+        data: {
+          commodity:  record.commodity,
+          market:     record.market,
+          district:   record.district || 'Maharashtra',
+          modalPrice: modal,
+          minPrice:   isNaN(min) ? modal : min,
+          maxPrice:   isNaN(max) ? modal : max,
+        }
+      });
+      count++;
+    }
+
+    res.json({ message: `✅ Synced ${count} live records from data.gov.in` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 const PORT = 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

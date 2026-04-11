@@ -8,14 +8,28 @@ generator client {
 }
 
 model MarketPrice {
-  id          Int      @id @default(autoincrement())
-  commodity   String
-  market      String
-  district    String
-  modalPrice  Float
-  minPrice    Float
-  maxPrice    Float
-  timestamp   DateTime @default(now())
+  id           Int            @id @default(autoincrement())
+  commodity    String
+  market       String
+  district     String
+  modalPrice   Float
+  minPrice     Float
+  maxPrice     Float
+  timestamp    DateTime       @default(now())
+  priceHistory PriceHistory[]
 
   @@index([commodity])
+  @@index([district])
+}
+
+model PriceHistory {
+  id            Int          @id @default(autoincrement())
+  marketPriceId Int
+  modalPrice    Float
+  minPrice      Float
+  maxPrice      Float
+  recordedAt    DateTime
+  marketPrice   MarketPrice  @relation(fields: [marketPriceId], references: [id])
+
+  @@index([marketPriceId])
 }
