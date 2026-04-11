@@ -1,0 +1,21 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "library"
+}
+
+model MarketPrice {
+  id          Int      @id @default(autoincrement())
+  commodity   String
+  market      String
+  district    String
+  modalPrice  Float
+  minPrice    Float
+  maxPrice    Float
+  timestamp   DateTime @default(now())
+
+  @@index([commodity])
+}
