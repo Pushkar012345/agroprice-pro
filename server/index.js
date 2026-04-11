@@ -49,7 +49,92 @@ app.get('/api/prices/:id/history', async (req, res) => {
   }
 });
 
-// 3. Filter by district - MUST be last
+// 3. Price Alert Simulator - MUST be before /:district
+// Returns hit-rate analysis: how often the price crossed the target in history
+app.get('/api/prices/:id/alert-simulate', async (req, res) => {
+  try {
+    const id          = parseInt(req.params.id);
+    const targetPrice = parseFloat(req.query.targetPrice);
+    const direction   = req.query.direction || 'above'; // 'above' | 'below'
+
+    if (isNaN(id) || isNaN(targetPrice)) {
+      return res.status(400).json({ error: 'Invalid id or targetPrice' });
+    }
+
+    const history = await prisma.priceHistory.findMany({
+      where: { marketPriceId: id },
+      orderBy: { recordedAt: 'asc' },
+    });
+
+    if (history.length === 0) {
+      return res.json({
+        hitCount: 0,
+        totalDays: 0,
+        hitRate: 0,
+        avgDaysToTrigger: null,
+        confidence: 0,
+        note: 'No history data available for this commodity. Simulation is based on current price spread only.',
+      });
+    }
+
+    // Count days where price crossed the target
+    const prices     = history.map(h => h.modalPrice);
+    const triggered  = prices.filter(p =>
+      direction === 'above' ? p >= targetPrice : p <= targetPrice
+    );
+    const hitCount   = triggered.length;
+    const totalDays  = prices.length;
+    const hitRate    = Math.round((hitCount / totalDays) * 100);
+
+    // Find average consecutive days to first trigger (simulate forward windows)
+    const daysToTriggerList = [];
+    for (let start = 0; start < prices.length; start++) {
+      for (let d = start; d < prices.length; d++) {
+        const triggered = direction === 'above'
+          ? prices[d] >= targetPrice
+          : prices[d] <= targetPrice;
+        if (triggered) {
+          daysToTriggerList.push(d - start + 1);
+          break;
+        }
+      }
+    }
+    const avgDaysToTrigger = daysToTriggerList.length > 0
+      ? Math.round(daysToTriggerList.reduce((a, b) => a + b, 0) / daysToTriggerList.length)
+      : null;
+
+    // Confidence: weighted blend of hit rate + recency bias (last 7 days)
+    const recentPrices    = prices.slice(-7);
+    const recentHits      = recentPrices.filter(p =>
+      direction === 'above' ? p >= targetPrice : p <= targetPrice
+    ).length;
+    const recentRate      = recentPrices.length > 0 ? recentHits / recentPrices.length : 0;
+    const confidence      = Math.round((hitRate * 0.6) + (recentRate * 100 * 0.4));
+
+    // Human-readable note
+    let note = '';
+    if (hitRate === 0) {
+      note = `Price has never crossed ₹${targetPrice} in ${totalDays} days of history. This is an ambitious target.`;
+    } else if (hitRate >= 80) {
+      note = `Price crosses this threshold very frequently — alert would fire most days. Consider tightening your target.`;
+    } else if (avgDaysToTrigger !== null) {
+      note = `On average, price reaches your target within ${avgDaysToTrigger} day(s) from any given start point.`;
+    }
+
+    res.json({
+      hitCount,
+      totalDays,
+      hitRate,
+      avgDaysToTrigger,
+      confidence,
+      note,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. Filter by district - MUST be last
 app.get('/api/prices/:district', async (req, res) => {
   try {
     const prices = await prisma.marketPrice.findMany({

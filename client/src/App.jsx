@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -7,11 +7,13 @@ import {
   LayoutDashboard, TrendingUp, Search, Loader2,
   RefreshCw, Zap, X, MapPin, BarChart2, Download, CloudDownload,
   ArrowUpDown, Flame, TrendingDown, Minus, SlidersHorizontal,
-  Sun, Moon
+  Sun, Moon, GitCompare, Bell, BellOff, ChevronUp, ChevronDown,
+  CheckCircle2, AlertTriangle, Info
 } from 'lucide-react';
 import {
   XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, AreaChart, Area, Legend
+  ResponsiveContainer, AreaChart, Area, Legend,
+  ReferenceLine
 } from 'recharts';
 
 const API = 'http://localhost:5000';
@@ -23,6 +25,13 @@ const fetchPrices = async () => {
 
 const fetchHistory = async (id) => {
   const { data } = await axios.get(`${API}/api/prices/${id}/history`);
+  return data;
+};
+
+const fetchAlertSimulation = async ({ id, targetPrice, direction }) => {
+  const { data } = await axios.get(`${API}/api/prices/${id}/alert-simulate`, {
+    params: { targetPrice, direction },
+  });
   return data;
 };
 
@@ -51,10 +60,458 @@ const CATEGORY_OPTIONS = [
   { value: 'CashCrops',  label: '🌿 Cash Crops' },
 ];
 
+const COMPARE_COLORS = ['#10b981', '#6366f1', '#f43f5e'];
+
+// ─────────────────────────────────────────────
+// CompareItemHistory
+// ─────────────────────────────────────────────
+function CompareItemHistory({ item, onData }) {
+  const { data = [], isLoading } = useQuery({
+    queryKey: ['history', item.id],
+    queryFn: () => fetchHistory(item.id),
+  });
+  useEffect(() => {
+    if (!isLoading) onData(item.id, data);
+  }, [data, isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+  return null;
+}
+
+// ─────────────────────────────────────────────
+// ComparisonModal
+// ─────────────────────────────────────────────
+function ComparisonModal({ items, onClose, isDark }) {
+  const [histories, setHistories] = useState({});
+
+  const handleHistoryData = (id, data) =>
+    setHistories(prev => ({ ...prev, [id]: data }));
+
+  const isLoading = items.some(item => !(item.id in histories));
+
+  const maxLen = Math.max(...items.map(item => (histories[item.id] || []).length));
+  const chartData = Array.from({ length: maxLen }, (_, i) => {
+    const point = {};
+    items.forEach((item, ci) => {
+      const h = histories[item.id];
+      if (h && h[i]) {
+        point[`price_${ci}`] = h[i].modal_price;
+        point['date'] = h[i].date;
+      }
+    });
+    return point;
+  });
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.9, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.9, y: 20 }}
+        onClick={e => e.stopPropagation()}
+        className="bg-white dark:bg-slate-800 rounded-[2rem] p-8 w-full max-w-3xl shadow-2xl border border-transparent dark:border-slate-700 max-h-[90vh] overflow-y-auto"
+      >
+        {items.map(item => (
+          <CompareItemHistory key={item.id} item={item} onData={handleHistoryData} />
+        ))}
+
+        <div className="flex justify-between items-start mb-6">
+          <div>
+            <span className="text-[10px] font-black uppercase tracking-widest text-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 px-3 py-1 rounded-full">
+              Price Comparison
+            </span>
+            <h3 className="text-2xl font-black text-slate-800 dark:text-white mt-2">
+              {items.map(i => i.commodity).join(' vs ')}
+            </h3>
+            <p className="text-slate-500 dark:text-slate-400 font-medium mt-1">
+              30-Day historical price overlay
+            </p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">
+            <X size={20} className="text-slate-500 dark:text-slate-400" />
+          </button>
+        </div>
+
+        <div className="grid gap-4 mb-6" style={{ gridTemplateColumns: `repeat(${items.length}, 1fr)` }}>
+          {items.map((item, ci) => (
+            <div key={item.id} className="bg-slate-50 dark:bg-slate-700 rounded-2xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: COMPARE_COLORS[ci] }} />
+                <span className="font-black text-slate-800 dark:text-white text-sm truncate">{item.commodity}</span>
+              </div>
+              <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-widest mb-0.5">{item.district}</p>
+              <p className="text-[11px] text-slate-400 mb-3 truncate">{item.market}</p>
+              {[
+                { label: 'Modal',  value: item.modal_price,               color: 'text-slate-900 dark:text-white' },
+                { label: 'Min',    value: item.min_price,                  color: 'text-emerald-600' },
+                { label: 'Max',    value: item.max_price,                  color: 'text-red-500' },
+                { label: 'Spread', value: item.max_price - item.min_price, color: 'text-slate-500 dark:text-slate-400' },
+              ].map(({ label, value, color }) => (
+                <div key={label} className="flex justify-between items-center py-1 border-b border-slate-200 dark:border-slate-600 last:border-0">
+                  <span className="text-[11px] text-slate-400 font-semibold">{label}</span>
+                  <span className={`text-sm font-black ${color}`}>₹{value}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div className="h-64">
+          {isLoading ? (
+            <div className="h-full flex items-center justify-center">
+              <Loader2 className="animate-spin text-emerald-500" size={32} />
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData}>
+                <defs>
+                  {items.map((_, ci) => (
+                    <linearGradient key={ci} id={`compareGrad${ci}`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor={COMPARE_COLORS[ci]} stopOpacity={0.15} />
+                      <stop offset="95%" stopColor={COMPARE_COLORS[ci]} stopOpacity={0} />
+                    </linearGradient>
+                  ))}
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#334155' : '#f1f5f9'} />
+                <XAxis dataKey="date" tick={{ fontSize: 10, fill: isDark ? '#64748b' : '#94a3b8' }} tickLine={false} axisLine={false} interval={4} />
+                <YAxis tick={{ fontSize: 10, fill: isDark ? '#64748b' : '#94a3b8' }} tickLine={false} axisLine={false} tickFormatter={v => `₹${v}`} />
+                <Tooltip
+                  contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.1)', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#f1f5f9' : '#0f172a' }}
+                  formatter={(val) => [`₹${val}`, '']}
+                />
+                <Legend />
+                {items.map((item, ci) => (
+                  <Area key={ci} type="monotone" dataKey={`price_${ci}`} name={item.commodity}
+                    stroke={COMPARE_COLORS[ci]} fill={`url(#compareGrad${ci})`} strokeWidth={2} dot={false} connectNulls />
+                ))}
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// PriceAlertModal
+// ─────────────────────────────────────────────
+function PriceAlertModal({ item, onClose, isDark }) {
+  const [targetPrice, setTargetPrice] = useState(item.modal_price);
+  const [direction, setDirection]     = useState('above'); // 'above' | 'below'
+  const [simulated, setSimulated]     = useState(false);
+
+  // Fetch history to drive the simulator chart
+  const { data: history = [], isLoading: histLoading } = useQuery({
+    queryKey: ['history', item.id],
+    queryFn: () => fetchHistory(item.id),
+  });
+
+  // Fetch simulation from server (hit-days analysis)
+  const {
+    data: simulation,
+    isLoading: simLoading,
+    refetch: runSim,
+    isFetching: simFetching,
+  } = useQuery({
+    queryKey: ['alert-sim', item.id, targetPrice, direction],
+    queryFn: () => fetchAlertSimulation({ id: item.id, targetPrice, direction }),
+    enabled: simulated,
+    staleTime: 0,
+  });
+
+  const handleRun = () => {
+    setSimulated(true);
+    if (simulated) runSim();
+  };
+
+  // Mark history days that would have triggered
+  const chartData = history.map(h => ({
+    ...h,
+    triggered: direction === 'above'
+      ? h.modal_price >= targetPrice
+      : h.modal_price <= targetPrice,
+  }));
+
+  const hitCount    = chartData.filter(d => d.triggered).length;
+  const hitPct      = history.length > 0 ? Math.round((hitCount / history.length) * 100) : 0;
+  const priceGap    = Math.abs(item.modal_price - targetPrice);
+  const gapPct      = item.modal_price > 0 ? ((priceGap / item.modal_price) * 100).toFixed(1) : 0;
+  const wouldFire   = direction === 'above'
+    ? item.modal_price >= targetPrice
+    : item.modal_price <= targetPrice;
+
+  // Smart insight
+  const getInsight = () => {
+    if (history.length === 0) return null;
+    if (wouldFire) return { type: 'success', text: `Alert would fire RIGHT NOW — current price ₹${item.modal_price} is ${direction} your target.` };
+    if (hitPct >= 70) return { type: 'warning', text: `High probability — price crossed your target on ${hitPct}% of recent days.` };
+    if (hitPct === 0) return { type: 'info', text: `Price has never crossed ₹${targetPrice} in the last 30 days. This is a stretch target.` };
+    return { type: 'info', text: `Price crossed your target on ${hitPct}% of days (${hitCount}/${history.length} days).` };
+  };
+
+  const insight = history.length > 0 ? getInsight() : null;
+
+  const insightStyles = {
+    success: { bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400', icon: <CheckCircle2 size={14} /> },
+    warning: { bg: 'bg-amber-50 dark:bg-amber-500/10',     text: 'text-amber-700 dark:text-amber-400',     icon: <AlertTriangle size={14} /> },
+    info:    { bg: 'bg-blue-50 dark:bg-blue-500/10',       text: 'text-blue-700 dark:text-blue-400',        icon: <Info size={14} /> },
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.9, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.9, y: 20 }}
+        onClick={e => e.stopPropagation()}
+        className="bg-white dark:bg-slate-800 rounded-[2rem] p-8 w-full max-w-2xl shadow-2xl border border-transparent dark:border-slate-700 max-h-[90vh] overflow-y-auto"
+      >
+        {/* Header */}
+        <div className="flex justify-between items-start mb-6">
+          <div>
+            <span className="text-[10px] font-black uppercase tracking-widest text-amber-500 bg-amber-50 dark:bg-amber-500/10 px-3 py-1 rounded-full">
+              Price Alert Simulator
+            </span>
+            <h3 className="text-2xl font-black text-slate-800 dark:text-white mt-2">{item.commodity}</h3>
+            <p className="text-slate-500 dark:text-slate-400 font-medium">{item.market} · {item.district}</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">
+            <X size={20} className="text-slate-500 dark:text-slate-400" />
+          </button>
+        </div>
+
+        {/* Current price reference */}
+        <div className="grid grid-cols-3 gap-3 mb-6">
+          {[
+            { label: 'Current Modal', value: item.modal_price, color: 'text-slate-900 dark:text-white' },
+            { label: 'Min (30d)',     value: history.length > 0 ? Math.min(...history.map(h => h.modal_price)) : item.min_price, color: 'text-emerald-600' },
+            { label: 'Max (30d)',     value: history.length > 0 ? Math.max(...history.map(h => h.modal_price)) : item.max_price, color: 'text-red-500' },
+          ].map(({ label, value, color }) => (
+            <div key={label} className="bg-slate-50 dark:bg-slate-700 rounded-2xl p-4 text-center">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">{label}</p>
+              <p className={`text-2xl font-black ${color}`}>₹{typeof value === 'number' ? Math.round(value) : value}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Alert configuration */}
+        <div className="bg-slate-50 dark:bg-slate-700/50 rounded-2xl p-5 mb-5">
+          <p className="text-xs font-black uppercase tracking-widest text-slate-400 mb-4">Configure Alert</p>
+
+          {/* Direction toggle */}
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={() => setDirection('above')}
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm transition-all ${
+                direction === 'above'
+                  ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/20'
+                  : 'bg-white dark:bg-slate-700 text-slate-500 dark:text-slate-300 ring-1 ring-slate-200 dark:ring-slate-600'
+              }`}
+            >
+              <ChevronUp size={16} /> Alert when price goes ABOVE
+            </button>
+            <button
+              onClick={() => setDirection('below')}
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm transition-all ${
+                direction === 'below'
+                  ? 'bg-red-500 text-white shadow-md shadow-red-500/20'
+                  : 'bg-white dark:bg-slate-700 text-slate-500 dark:text-slate-300 ring-1 ring-slate-200 dark:ring-slate-600'
+              }`}
+            >
+              <ChevronDown size={16} /> Alert when price goes BELOW
+            </button>
+          </div>
+
+          {/* Target price slider + input */}
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Target Price</label>
+              <div className="flex items-center gap-1">
+                <span className="text-slate-400 text-sm font-bold">₹</span>
+                <input
+                  type="number"
+                  value={targetPrice}
+                  min={1}
+                  onChange={e => setTargetPrice(Number(e.target.value))}
+                  className="w-24 text-right text-lg font-black text-slate-900 dark:text-white bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl px-2 py-1 outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+            <input
+              type="range"
+              min={Math.max(1, Math.round(item.modal_price * 0.3))}
+              max={Math.round(item.modal_price * 2)}
+              step={10}
+              value={targetPrice}
+              onChange={e => setTargetPrice(Number(e.target.value))}
+              className="w-full accent-emerald-500"
+            />
+            <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+              <span>₹{Math.max(1, Math.round(item.modal_price * 0.3))}</span>
+              <span className="text-slate-500 dark:text-slate-400 font-semibold">
+                {targetPrice > item.modal_price ? `+${gapPct}% above current` : targetPrice < item.modal_price ? `${gapPct}% below current` : 'At current price'}
+              </span>
+              <span>₹{Math.round(item.modal_price * 2)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Insight banner */}
+        {insight && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`flex items-start gap-3 px-4 py-3 rounded-xl mb-5 ${insightStyles[insight.type].bg}`}
+          >
+            <span className={`mt-0.5 flex-shrink-0 ${insightStyles[insight.type].text}`}>
+              {insightStyles[insight.type].icon}
+            </span>
+            <p className={`text-xs font-semibold leading-relaxed ${insightStyles[insight.type].text}`}>
+              {insight.text}
+            </p>
+          </motion.div>
+        )}
+
+        {/* Chart with reference line */}
+        <div className="h-52 mb-5">
+          {histLoading ? (
+            <div className="h-full flex items-center justify-center">
+              <Loader2 className="animate-spin text-emerald-500" size={28} />
+            </div>
+          ) : history.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-slate-400">
+              <BarChart2 size={32} className="mb-2 opacity-40" />
+              <p className="text-sm font-semibold">No history data available</p>
+              <p className="text-xs mt-1">Simulator uses live price data when history loads</p>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData}>
+                <defs>
+                  <linearGradient id="alertGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="#10b981" stopOpacity={0.2} />
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#334155' : '#f1f5f9'} />
+                <XAxis dataKey="date" tick={{ fontSize: 10, fill: isDark ? '#64748b' : '#94a3b8' }} tickLine={false} axisLine={false} interval={4} />
+                <YAxis tick={{ fontSize: 10, fill: isDark ? '#64748b' : '#94a3b8' }} tickLine={false} axisLine={false} tickFormatter={v => `₹${v}`} domain={['auto', 'auto']} />
+                <Tooltip
+                  contentStyle={{ borderRadius: '12px', border: 'none', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#f1f5f9' : '#0f172a' }}
+                  formatter={(val, name) => name === 'modal_price' ? [`₹${val}`, 'Modal Price'] : [val, name]}
+                />
+                {/* Target reference line */}
+                <ReferenceLine
+                  y={targetPrice}
+                  stroke={direction === 'above' ? '#10b981' : '#f43f5e'}
+                  strokeDasharray="6 3"
+                  strokeWidth={2}
+                  label={{
+                    value: `Target ₹${targetPrice}`,
+                    fill: direction === 'above' ? '#10b981' : '#f43f5e',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    position: 'insideTopRight',
+                  }}
+                />
+                <Area type="monotone" dataKey="modal_price" name="modal_price" stroke="#10b981" fill="url(#alertGrad)" strokeWidth={2} dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        {/* Stats row */}
+        {history.length > 0 && (
+          <div className="grid grid-cols-3 gap-3 mb-5">
+            <div className="bg-slate-50 dark:bg-slate-700 rounded-2xl p-4 text-center">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">Would fire today</p>
+              <p className={`text-xl font-black ${wouldFire ? 'text-emerald-500' : 'text-slate-400'}`}>
+                {wouldFire ? 'YES' : 'NO'}
+              </p>
+            </div>
+            <div className="bg-slate-50 dark:bg-slate-700 rounded-2xl p-4 text-center">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">Hit rate (30d)</p>
+              <p className={`text-xl font-black ${hitPct >= 50 ? 'text-emerald-500' : hitPct >= 20 ? 'text-amber-500' : 'text-slate-500'}`}>
+                {hitPct}%
+              </p>
+            </div>
+            <div className="bg-slate-50 dark:bg-slate-700 rounded-2xl p-4 text-center">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">Days triggered</p>
+              <p className="text-xl font-black text-slate-800 dark:text-white">{hitCount}/{history.length}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Server-side simulation result */}
+        <AnimatePresence>
+          {simulation && !simFetching && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="bg-slate-900 dark:bg-slate-700 rounded-2xl p-5 mb-5"
+            >
+              <p className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">AI Simulation Result</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-slate-400 text-xs font-semibold mb-1">Avg days to trigger</p>
+                  <p className="text-2xl font-black text-white">{simulation.avgDaysToTrigger ?? '—'} <span className="text-sm text-slate-400">days</span></p>
+                </div>
+                <div>
+                  <p className="text-slate-400 text-xs font-semibold mb-1">Confidence</p>
+                  <p className="text-2xl font-black text-emerald-400">{simulation.confidence ?? '—'}%</p>
+                </div>
+              </div>
+              {simulation.note && (
+                <p className="text-slate-400 text-xs mt-3 leading-relaxed">{simulation.note}</p>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Action row */}
+        <div className="flex gap-3">
+          <button
+            onClick={handleRun}
+            disabled={simLoading || simFetching}
+            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-white font-bold text-sm transition-all"
+          >
+            {simLoading || simFetching
+              ? <><Loader2 size={16} className="animate-spin" /> Simulating...</>
+              : <><Bell size={16} /> Run Simulation</>
+            }
+          </button>
+          <button
+            onClick={onClose}
+            className="px-5 py-3 rounded-2xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 font-bold text-sm transition-all"
+          >
+            Close
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Main App
+// ─────────────────────────────────────────────
 function App() {
   const [searchTerm, setSearchTerm]         = useState('');
   const [activeDistrict, setActiveDistrict] = useState('All');
   const [selectedItem, setSelectedItem]     = useState(null);
+  const [alertItem, setAlertItem]           = useState(null);
   const [isSyncing, setIsSyncing]           = useState(false);
   const [syncMsg, setSyncMsg]               = useState(null);
   const [sortBy, setSortBy]                 = useState('default');
@@ -66,7 +523,11 @@ function App() {
     return false;
   });
 
-  // Apply / remove `dark` class on root element
+  // Compare state
+  const [compareMode, setCompareMode]       = useState(false);
+  const [compareItems, setCompareItems]     = useState([]);
+  const [showComparison, setShowComparison] = useState(false);
+
   useEffect(() => {
     const root = document.documentElement;
     if (isDark) {
@@ -89,6 +550,23 @@ function App() {
     queryFn: () => fetchHistory(selectedItem.id),
     enabled: !!selectedItem,
   });
+
+  const toggleCompare = (item) => {
+    setCompareItems(prev => {
+      const exists = prev.find(i => i.id === item.id);
+      if (exists) return prev.filter(i => i.id !== item.id);
+      if (prev.length >= 3) return prev;
+      return [...prev, item];
+    });
+  };
+
+  const isInCompare = (item) => compareItems.some(i => i.id === item.id);
+
+  const exitCompareMode = () => {
+    setCompareMode(false);
+    setCompareItems([]);
+    setShowComparison(false);
+  };
 
   const handleSync = async () => {
     setIsSyncing(true);
@@ -165,6 +643,14 @@ function App() {
     setSearchTerm('');
   };
 
+  const handleCardClick = useCallback((item) => {
+    if (compareMode) {
+      toggleCompare(item);
+    } else {
+      setSelectedItem(item);
+    }
+  }, [compareMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (isLoading) return (
     <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-50 dark:bg-slate-950">
       <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}>
@@ -180,7 +666,6 @@ function App() {
       {/* ── Sidebar ── */}
       <aside className="w-72 bg-slate-900 dark:bg-slate-950 dark:border-r dark:border-slate-800 text-white hidden lg:flex flex-col shadow-2xl overflow-y-auto">
         <div className="p-8">
-          {/* Logo */}
           <div className="flex items-center gap-3 mb-10">
             <div className="h-10 w-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
               <Zap size={24} className="text-white fill-white" />
@@ -192,7 +677,6 @@ function App() {
             <NavItem icon={<LayoutDashboard size={20} />} label="AI Intelligence" active />
           </nav>
 
-          {/* Sync */}
           <button
             onClick={handleSync}
             disabled={isSyncing}
@@ -219,7 +703,6 @@ function App() {
             )}
           </AnimatePresence>
 
-          {/* District Filter */}
           <div className="mt-4">
             <div className="flex items-center gap-2 mb-4">
               <MapPin size={14} className="text-emerald-400" />
@@ -257,7 +740,10 @@ function App() {
           <div>
             <h2 className="text-4xl font-black text-slate-800 dark:text-white tracking-tight">Market Pulse</h2>
             <p className="text-slate-500 dark:text-slate-400 mt-1">
-              {activeDistrict === 'All' ? 'Predictive analysis for Maharashtra regions' : `Showing markets in ${activeDistrict}`}
+              {compareMode
+                ? `Compare mode — select up to 3 commodities (${compareItems.length}/3 selected)`
+                : activeDistrict === 'All' ? 'Predictive analysis for Maharashtra regions' : `Showing markets in ${activeDistrict}`
+              }
             </p>
           </div>
           <div className="flex items-center gap-3 w-full md:w-auto">
@@ -272,6 +758,25 @@ function App() {
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
             </div>
+
+            {/* Compare Toggle */}
+            <button
+              onClick={() => compareMode ? exitCompareMode() : setCompareMode(true)}
+              title={compareMode ? 'Exit compare mode' : 'Compare commodities'}
+              className={`flex items-center gap-2 px-4 py-3 rounded-2xl ring-1 transition-all font-semibold text-sm ${
+                compareMode
+                  ? 'bg-emerald-500 text-white ring-emerald-500 shadow-lg shadow-emerald-500/30'
+                  : 'bg-white dark:bg-slate-800 ring-slate-200 dark:ring-slate-700 hover:ring-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              <GitCompare size={18} />
+              <span className="hidden md:inline">{compareMode ? 'Exit Compare' : 'Compare'}</span>
+              {compareItems.length > 0 && (
+                <span className="bg-white/30 text-white text-xs font-black px-1.5 py-0.5 rounded-lg leading-none">
+                  {compareItems.length}
+                </span>
+              )}
+            </button>
 
             {/* Export */}
             <button
@@ -291,7 +796,7 @@ function App() {
               <RefreshCw size={20} className="text-slate-600 dark:text-slate-300" />
             </button>
 
-            {/* ── Dark / Light Toggle ── */}
+            {/* Dark / Light Toggle */}
             <button
               onClick={() => setIsDark(d => !d)}
               title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
@@ -299,23 +804,11 @@ function App() {
             >
               <AnimatePresence mode="wait" initial={false}>
                 {isDark ? (
-                  <motion.div
-                    key="sun"
-                    initial={{ rotate: -90, opacity: 0 }}
-                    animate={{ rotate: 0,   opacity: 1 }}
-                    exit={{   rotate:  90,  opacity: 0 }}
-                    transition={{ duration: 0.2 }}
-                  >
+                  <motion.div key="sun" initial={{ rotate: -90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: 90, opacity: 0 }} transition={{ duration: 0.2 }}>
                     <Sun size={20} className="text-amber-400" />
                   </motion.div>
                 ) : (
-                  <motion.div
-                    key="moon"
-                    initial={{ rotate: 90,  opacity: 0 }}
-                    animate={{ rotate: 0,   opacity: 1 }}
-                    exit={{   rotate: -90,  opacity: 0 }}
-                    transition={{ duration: 0.2 }}
-                  >
+                  <motion.div key="moon" initial={{ rotate: 90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: -90, opacity: 0 }} transition={{ duration: 0.2 }}>
                     <Moon size={20} className="text-slate-600" />
                   </motion.div>
                 )}
@@ -324,7 +817,7 @@ function App() {
           </div>
         </header>
 
-        {/* ── Sort & Filter Bar ── */}
+        {/* Sort & Filter Bar */}
         <motion.div
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -335,7 +828,6 @@ function App() {
             <span className="text-xs font-bold uppercase tracking-widest">Filters</span>
           </div>
 
-          {/* Category pills */}
           <div className="flex flex-wrap gap-2">
             {CATEGORY_OPTIONS.map(opt => (
               <button
@@ -354,7 +846,6 @@ function App() {
 
           <div className="h-6 w-px bg-slate-100 dark:bg-slate-700 mx-1 hidden sm:block" />
 
-          {/* Sort buttons */}
           <div className="flex items-center gap-2 sm:ml-auto flex-wrap">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-widest hidden sm:block">Sort</span>
             {SORT_OPTIONS.map(opt => (
@@ -373,23 +864,19 @@ function App() {
             ))}
           </div>
 
-          {/* Result count + clear */}
           <div className="w-full flex items-center gap-2 pt-2 border-t border-slate-50 dark:border-slate-700 mt-1">
             <span className="text-[11px] text-slate-400 font-semibold">
               Showing <span className="text-emerald-500 font-black">{processedData.length}</span> of {prices.length} markets
             </span>
             {hasActiveFilters && (
-              <button
-                onClick={clearAllFilters}
-                className="ml-auto flex items-center gap-1 text-[11px] text-red-400 hover:text-red-500 font-bold transition-colors"
-              >
+              <button onClick={clearAllFilters} className="ml-auto flex items-center gap-1 text-[11px] text-red-400 hover:text-red-500 font-bold transition-colors">
                 <X size={12} /> Clear all filters
               </button>
             )}
           </div>
         </motion.div>
 
-        {/* ── KPI Grid ── */}
+        {/* KPI Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-10">
           <div className="lg:col-span-2 bg-slate-900 dark:bg-slate-800 dark:border dark:border-slate-700 rounded-[2rem] p-8 text-white relative overflow-hidden shadow-2xl">
             <div className="relative z-10">
@@ -436,31 +923,25 @@ function App() {
 
         {/* Empty state */}
         {processedData.length === 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="flex flex-col items-center justify-center py-24 text-center"
-          >
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center justify-center py-24 text-center">
             <div className="h-16 w-16 bg-slate-100 dark:bg-slate-800 rounded-2xl flex items-center justify-center mb-4">
               <Search size={28} className="text-slate-400" />
             </div>
             <p className="text-slate-700 dark:text-slate-200 font-bold text-lg">No markets found</p>
             <p className="text-slate-400 text-sm mt-1">Try adjusting your filters or search term</p>
-            <button
-              onClick={clearAllFilters}
-              className="mt-4 px-5 py-2.5 bg-emerald-500 text-white rounded-xl text-sm font-bold hover:bg-emerald-600 transition-colors"
-            >
+            <button onClick={clearAllFilters} className="mt-4 px-5 py-2.5 bg-emerald-500 text-white rounded-xl text-sm font-bold hover:bg-emerald-600 transition-colors">
               Clear all filters
             </button>
           </motion.div>
         )}
 
-        {/* ── Cards Grid ── */}
+        {/* Cards Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
           <AnimatePresence>
             {processedData.map((item, index) => {
               const trend      = calculateTrend(item);
               const volatility = getVolatility(item);
+              const selected   = isInCompare(item);
               return (
                 <motion.div
                   key={item.id || index}
@@ -469,9 +950,37 @@ function App() {
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.9 }}
                   transition={{ delay: index * 0.02 }}
-                  onClick={() => setSelectedItem(item)}
-                  className="group bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-100 dark:border-slate-700 hover:border-emerald-500 dark:hover:border-emerald-500 hover:shadow-2xl hover:shadow-emerald-500/10 transition-all cursor-pointer"
+                  onClick={() => handleCardClick(item)}
+                  className={`relative group bg-white dark:bg-slate-800 p-6 rounded-[2rem] border transition-all cursor-pointer ${
+                    compareMode && selected
+                      ? 'border-emerald-500 ring-2 ring-emerald-500/30 shadow-lg shadow-emerald-500/10'
+                      : 'border-slate-100 dark:border-slate-700 hover:border-emerald-500 dark:hover:border-emerald-500 hover:shadow-2xl hover:shadow-emerald-500/10'
+                  }`}
                 >
+                  {/* Compare checkbox */}
+                  {compareMode && (
+                    <div className={`absolute top-4 right-4 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all z-10 ${
+                      selected ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800'
+                    }`}>
+                      {selected && (
+                        <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                          <path d="M1 4l2.5 2.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Alert bell — only visible on hover, not in compare mode */}
+                  {!compareMode && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setAlertItem(item); }}
+                      className="absolute top-4 right-4 w-8 h-8 rounded-xl bg-slate-50 dark:bg-slate-700 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-amber-50 dark:hover:bg-amber-500/10 hover:text-amber-500 text-slate-400 transition-all z-10"
+                      title="Set price alert"
+                    >
+                      <Bell size={14} />
+                    </button>
+                  )}
+
                   <div className="flex justify-between items-start mb-6">
                     <div className="h-12 w-12 bg-slate-50 dark:bg-slate-700 rounded-2xl flex items-center justify-center group-hover:bg-emerald-500 group-hover:text-white transition-all duration-300 text-slate-600 dark:text-slate-300">
                       <TrendingUp size={20} />
@@ -480,6 +989,7 @@ function App() {
                       {item.district}
                     </span>
                   </div>
+
                   <h4 className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">{item.commodity}</h4>
                   <p className="text-xl font-bold text-slate-800 dark:text-white mb-4">{item.market}</p>
                   <div className="flex items-baseline gap-1 mb-3">
@@ -487,7 +997,6 @@ function App() {
                     <span className="text-xs font-bold text-slate-400">/q</span>
                   </div>
 
-                  {/* Volatility bar */}
                   <div className="mb-4">
                     <div className="flex justify-between text-[10px] text-slate-400 font-semibold mb-1">
                       <span>₹{item.min_price}</span>
@@ -511,31 +1020,69 @@ function App() {
                         {trend.label} {trend.icon}
                       </span>
                     </div>
-                    <span className="text-[10px] text-slate-400 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <BarChart2 size={12} /> View chart
-                    </span>
+                    {!compareMode && (
+                      <span className="text-[10px] text-slate-400 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <BarChart2 size={12} /> View chart
+                      </span>
+                    )}
+                    {compareMode && (
+                      <span className={`text-[10px] font-bold flex items-center gap-1 transition-opacity ${
+                        selected ? 'text-emerald-500 opacity-100' : 'text-slate-400 opacity-60'
+                      }`}>
+                        <GitCompare size={12} /> {selected ? 'Selected' : 'Select'}
+                      </span>
+                    )}
                   </div>
                 </motion.div>
               );
             })}
           </AnimatePresence>
         </div>
+
+        {/* Compare sticky tray */}
+        <AnimatePresence>
+          {compareMode && compareItems.length >= 1 && (
+            <motion.div
+              initial={{ y: 80, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 80, opacity: 0 }}
+              className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-slate-900 dark:bg-slate-800 rounded-2xl px-5 py-4 shadow-2xl flex items-center gap-4 border border-slate-700 max-w-xl w-[calc(100%-2rem)]"
+            >
+              <div className="flex items-center gap-2 flex-1 flex-wrap">
+                {compareItems.map((item, ci) => (
+                  <div key={item.id} className="flex items-center gap-1.5 bg-slate-800 dark:bg-slate-700 px-3 py-1.5 rounded-xl">
+                    <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: COMPARE_COLORS[ci] }} />
+                    <span className="text-white font-bold text-xs">{item.commodity}</span>
+                    <span className="text-slate-500 text-xs hidden sm:inline">{item.district}</span>
+                    <button onClick={(e) => { e.stopPropagation(); toggleCompare(item); }} className="ml-1 text-slate-500 hover:text-red-400 transition-colors">
+                      <X size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                disabled={compareItems.length < 2}
+                onClick={() => setShowComparison(true)}
+                className="flex-shrink-0 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm rounded-xl transition-colors"
+              >
+                Compare {compareItems.length}/3
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
       </main>
 
       {/* ── History Modal ── */}
       <AnimatePresence>
         {selectedItem && (
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
             onClick={() => setSelectedItem(null)}
           >
             <motion.div
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.9, y: 20 }}
+              initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
               onClick={(e) => e.stopPropagation()}
               className="bg-white dark:bg-slate-800 rounded-[2rem] p-8 w-full max-w-2xl shadow-2xl border border-transparent dark:border-slate-700"
             >
@@ -548,6 +1095,14 @@ function App() {
                   <p className="text-slate-500 dark:text-slate-400 font-medium">{selectedItem.market} · 30-Day Price History</p>
                 </div>
                 <div className="flex items-center gap-2">
+                  {/* Set Alert button inside history modal */}
+                  <button
+                    onClick={() => { setSelectedItem(null); setAlertItem(selectedItem); }}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-500/20 transition-colors text-xs font-bold"
+                    title="Set price alert"
+                  >
+                    <Bell size={14} /> Set Alert
+                  </button>
                   <button
                     onClick={() => {
                       const headers = ['Date', 'Modal Price', 'Min Price', 'Max Price'];
@@ -602,13 +1157,7 @@ function App() {
                       <XAxis dataKey="date" tick={{ fontSize: 10, fill: isDark ? '#64748b' : '#94a3b8' }} tickLine={false} axisLine={false} interval={4} />
                       <YAxis tick={{ fontSize: 10, fill: isDark ? '#64748b' : '#94a3b8' }} tickLine={false} axisLine={false} tickFormatter={v => `₹${v}`} />
                       <Tooltip
-                        contentStyle={{
-                          borderRadius: '12px',
-                          border: 'none',
-                          boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
-                          background: isDark ? '#1e293b' : '#fff',
-                          color: isDark ? '#f1f5f9' : '#0f172a',
-                        }}
+                        contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.1)', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#f1f5f9' : '#0f172a' }}
                         formatter={(val) => [`₹${val}`, '']}
                       />
                       <Legend />
@@ -621,6 +1170,28 @@ function App() {
               </div>
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Comparison Modal ── */}
+      <AnimatePresence>
+        {showComparison && compareItems.length >= 2 && (
+          <ComparisonModal
+            items={compareItems}
+            isDark={isDark}
+            onClose={() => setShowComparison(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ── Price Alert Modal ── */}
+      <AnimatePresence>
+        {alertItem && (
+          <PriceAlertModal
+            item={alertItem}
+            isDark={isDark}
+            onClose={() => setAlertItem(null)}
+          />
         )}
       </AnimatePresence>
     </div>
