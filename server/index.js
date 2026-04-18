@@ -12,6 +12,9 @@ const prisma = new PrismaClient({ adapter });
 
 const app = express();
 
+// ── Trust proxy (required for Render/Vercel deployment) ──
+app.set('trust proxy', 1);
+
 // ── CORS ──
 const allowedOrigins = [
   'http://localhost:5173',
@@ -21,9 +24,13 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin) return callback(null, true);
+    const clean = origin.replace(/\/$/, '');
+    const allowed = allowedOrigins.map(o => o.replace(/\/$/, ''));
+    if (allowed.includes(clean)) {
       callback(null, true);
     } else {
+      console.error(`CORS blocked: ${origin}`);
       callback(new Error(`CORS blocked: ${origin}`));
     }
   },
