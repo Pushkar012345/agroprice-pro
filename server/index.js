@@ -6,7 +6,10 @@ const { Pool } = require('pg');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const { PrismaClient } = require('@prisma/client');
 const axios = require('axios');
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }  // required for Render/cloud PostgreSQL
+});
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
@@ -31,7 +34,7 @@ app.use(cors({
       callback(null, true);
     } else {
       console.error(`CORS blocked: ${origin}`);
-      callback(new Error(`CORS blocked: ${origin}`));
+      callback(null, false);
     }
   },
   methods: ['GET', 'POST'],
