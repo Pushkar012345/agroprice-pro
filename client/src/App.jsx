@@ -8,7 +8,7 @@ import {
   RefreshCw, Zap, X, MapPin, BarChart2, Download, CloudDownload,
   ArrowUpDown, Flame, TrendingDown, Minus, SlidersHorizontal,
   Sun, Moon, GitCompare, Bell, BellOff, ChevronUp, ChevronDown,
-  CheckCircle2, AlertTriangle, Info
+  CheckCircle2, AlertTriangle, Info, MessageSquare, Send, Bot, User
 } from 'lucide-react';
 import {
   XAxis, YAxis, CartesianGrid, Tooltip,
@@ -16,7 +16,7 @@ import {
   ReferenceLine
 } from 'recharts';
 
-const API = 'http://localhost:5000';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const fetchPrices = async () => {
   const { data } = await axios.get(`${API}/api/prices`);
@@ -505,6 +505,171 @@ function PriceAlertModal({ item, onClose, isDark }) {
 }
 
 // ─────────────────────────────────────────────
+// AgroBot Chatbot
+// ─────────────────────────────────────────────
+function AgroBot({ prices, isDark }) {
+  const [open, setOpen]         = useState(false);
+  const [input, setInput]       = useState('');
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: "👋 Hi! I'm AgroBot. Ask me about crop prices, best markets, price trends, or farming advice for Maharashtra." }
+  ]);
+  const [loading, setLoading] = useState(false);
+  const bottomRef = React.useRef(null);
+
+  useEffect(() => {
+    if (bottomRef.current) bottomRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, open]);
+
+  const buildSystemPrompt = () => {
+    const summary = prices.slice(0, 60).map(p =>
+      `${p.commodity} at ${p.market} (${p.district}): Modal Rs.${p.modal_price}, Min Rs.${p.min_price}, Max Rs.${p.max_price}`
+    ).join('\n');
+    return `You are AgroBot, an expert agricultural market assistant for Maharashtra, India.
+You have access to live mandi price data. Use it to answer questions accurately.
+
+LIVE PRICE DATA:
+${summary}
+
+Guidelines:
+- Prices are in Rs. per quintal
+- Be concise and practical (3-5 lines max unless detailed analysis asked)
+- When suggesting best markets, cite actual prices
+- If a crop is not in the data, say so honestly
+- Help with: current prices, best market to sell/buy, price trends, farming advice`;
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || loading) return;
+    const newMessages = [...messages, { role: 'user', content: text }];
+    setMessages(newMessages);
+    setInput('');
+    setLoading(true);
+    try {
+      const response = await fetch(`${API}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemPrompt: buildSystemPrompt(),
+          messages: newMessages.map(m => ({ role: m.role, content: m.content }))
+        })
+      });
+      const data = await response.json();
+      const reply = data?.reply || 'Sorry, could not get a response.';
+      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
+    } catch {
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Connection error. Please try again.' }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+
+  const suggestions = ['Best market for Onion?', 'Highest price crop today?', 'Compare Pune vs Nashik', 'Should I sell Cotton now?'];
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-emerald-500 hover:bg-emerald-600 shadow-2xl shadow-emerald-500/40 flex items-center justify-center transition-all duration-200 hover:scale-110"
+      >
+        {open ? <X size={22} className="text-white" /> : <MessageSquare size={22} className="text-white" />}
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+            transition={{ duration: 0.2 }}
+            className={`fixed z-50 shadow-2xl border flex flex-col overflow-hidden
+              bottom-0 right-0 left-0 rounded-t-3xl
+              sm:bottom-24 sm:right-6 sm:left-auto sm:w-[360px] sm:rounded-3xl
+              ${isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}
+            style={{ height: '520px' }}
+          >
+            {/* Header */}
+            <div className="bg-emerald-500 px-5 py-4 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center">
+                <Bot size={20} className="text-white" />
+              </div>
+              <div>
+                <p className="text-white font-bold text-sm">AgroBot</p>
+                <p className="text-emerald-100 text-xs">AI Market Assistant • Maharashtra</p>
+              </div>
+              <div className="ml-auto flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-300 animate-pulse" />
+                <span className="text-emerald-100 text-xs">Live</span>
+              </div>
+            </div>
+
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                  <div className={`w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center ${msg.role === 'user' ? 'bg-emerald-500' : isDark ? 'bg-slate-700' : 'bg-slate-100'}`}>
+                    {msg.role === 'user' ? <User size={14} className="text-white" /> : <Bot size={14} className={isDark ? 'text-emerald-400' : 'text-emerald-600'} />}
+                  </div>
+                  <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${msg.role === 'user' ? 'bg-emerald-500 text-white rounded-tr-sm' : isDark ? 'bg-slate-800 text-slate-100 rounded-tl-sm' : 'bg-slate-100 text-slate-800 rounded-tl-sm'}`}>
+                    {msg.content}
+                  </div>
+                </div>
+              ))}
+              {loading && (
+                <div className="flex gap-2">
+                  <div className={`w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center ${isDark ? 'bg-slate-700' : 'bg-slate-100'}`}>
+                    <Bot size={14} className={isDark ? 'text-emerald-400' : 'text-emerald-600'} />
+                  </div>
+                  <div className={`rounded-2xl rounded-tl-sm px-4 py-3 ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>
+                    <div className="flex gap-1 items-center">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div ref={bottomRef} />
+            </div>
+
+            {/* Suggestions */}
+            {messages.length === 1 && (
+              <div className="px-4 pb-2 flex flex-wrap gap-2">
+                {suggestions.map(s => (
+                  <button key={s} onClick={() => setInput(s)}
+                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${isDark ? 'border-slate-600 text-slate-300 hover:bg-slate-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Input */}
+            <div className={`px-4 py-3 border-t ${isDark ? 'border-slate-700' : 'border-slate-100'}`}>
+              <div className={`flex items-center gap-2 rounded-2xl px-4 py-2 ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>
+                <input
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={handleKey}
+                  placeholder="Ask about prices, markets..."
+                  className={`flex-1 bg-transparent text-sm outline-none ${isDark ? 'text-slate-100 placeholder-slate-500' : 'text-slate-800 placeholder-slate-400'}`}
+                />
+                <button onClick={send} disabled={!input.trim() || loading}
+                  className="w-8 h-8 rounded-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 flex items-center justify-center transition-colors flex-shrink-0">
+                  <Send size={14} className="text-white" />
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────
 // Main App
 // ─────────────────────────────────────────────
 function App() {
@@ -527,6 +692,9 @@ function App() {
   const [compareMode, setCompareMode]       = useState(false);
   const [compareItems, setCompareItems]     = useState([]);
   const [showComparison, setShowComparison] = useState(false);
+
+  // Mobile sidebar
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -663,14 +831,30 @@ function App() {
   return (
     <div className="flex h-screen bg-[#f8fafc] dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 transition-colors duration-300">
 
+      {/* ── Mobile Sidebar Overlay ── */}
+      {mobileSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-40 lg:hidden"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
+
       {/* ── Sidebar ── */}
-      <aside className="w-72 bg-slate-900 dark:bg-slate-950 dark:border-r dark:border-slate-800 text-white hidden lg:flex flex-col shadow-2xl overflow-y-auto">
+      <aside className={`w-72 bg-slate-900 dark:bg-slate-950 dark:border-r dark:border-slate-800 text-white flex flex-col shadow-2xl overflow-y-auto
+        fixed inset-y-0 left-0 z-50 transition-transform duration-300 lg:relative lg:translate-x-0
+        ${mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         <div className="p-8">
           <div className="flex items-center gap-3 mb-10">
             <div className="h-10 w-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
               <Zap size={24} className="text-white fill-white" />
             </div>
             <h1 className="text-xl font-black tracking-widest">AGRO<span className="text-emerald-400">CORE</span></h1>
+            <button
+              onClick={() => setMobileSidebarOpen(false)}
+              className="ml-auto lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700"
+            >
+              <X size={18} />
+            </button>
           </div>
 
           <nav className="space-y-1 mb-6">
@@ -738,7 +922,16 @@ function App() {
         {/* Header */}
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-6">
           <div>
-            <h2 className="text-4xl font-black text-slate-800 dark:text-white tracking-tight">Market Pulse</h2>
+            <div className="flex items-center gap-3">
+              {/* Hamburger - mobile only */}
+              <button
+                onClick={() => setMobileSidebarOpen(true)}
+                className="lg:hidden p-2 rounded-xl bg-white dark:bg-slate-800 ring-1 ring-slate-200 dark:ring-slate-700 text-slate-600 dark:text-slate-300"
+              >
+                <SlidersHorizontal size={20} />
+              </button>
+              <h2 className="text-3xl md:text-4xl font-black text-slate-800 dark:text-white tracking-tight">Market Pulse</h2>
+            </div>
             <p className="text-slate-500 dark:text-slate-400 mt-1">
               {compareMode
                 ? `Compare mode — select up to 3 commodities (${compareItems.length}/3 selected)`
@@ -1194,6 +1387,9 @@ function App() {
           />
         )}
       </AnimatePresence>
+
+      {/* ── AgroBot Chatbot ── */}
+      <AgroBot prices={prices} isDark={isDark} />
     </div>
   );
 }
