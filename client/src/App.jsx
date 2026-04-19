@@ -8,7 +8,8 @@ import {
   RefreshCw, Zap, X, MapPin, BarChart2, Download, CloudDownload,
   ArrowUpDown, Flame, TrendingDown, Minus, SlidersHorizontal,
   Sun, Moon, GitCompare, Bell, BellOff, ChevronUp, ChevronDown,
-  CheckCircle2, AlertTriangle, Info, MessageSquare, Send, Bot, User
+  CheckCircle2, AlertTriangle, Info, MessageSquare, Send, Bot, User,
+  GitBranch, Link, Mail, ExternalLink
 } from 'lucide-react';
 import {
   XAxis, YAxis, CartesianGrid, Tooltip,
@@ -857,6 +858,19 @@ function App() {
             </button>
           </div>
 
+          {/* ── Developer Card (top) ── */}
+          <div className="flex items-center gap-3 mb-5 p-3 rounded-2xl bg-slate-800/60 border border-slate-700">
+            <div className="w-9 h-9 rounded-full bg-emerald-500 flex items-center justify-center text-white font-black text-sm flex-shrink-0">PP</div>
+            <div className="flex-1 min-w-0">
+              <p className="text-white text-sm font-bold">Pushkar Pawar</p>
+              <div className="flex gap-2 mt-1">
+                <a href="mailto:pushkarpawaroff@gmail.com" className="text-slate-400 hover:text-emerald-400 transition-colors" title="Email"><Mail size={11} /></a>
+                <a href="https://github.com/Pushkar012345" target="_blank" rel="noreferrer" className="text-slate-400 hover:text-emerald-400 transition-colors" title="GitHub"><GitBranch size={11} /></a>
+                <a href="https://www.linkedin.com/in/pushkarpawar314/" target="_blank" rel="noreferrer" className="text-slate-400 hover:text-emerald-400 transition-colors" title="LinkedIn"><Link size={11} /></a>
+              </div>
+            </div>
+          </div>
+
           <nav className="space-y-1 mb-6">
             <NavItem icon={<LayoutDashboard size={20} />} label="AI Intelligence" active />
           </nav>
@@ -914,6 +928,7 @@ function App() {
             </div>
           </div>
         </div>
+
       </aside>
 
       {/* ── Main ── */}
@@ -1264,6 +1279,33 @@ function App() {
           )}
         </AnimatePresence>
 
+        {/* ── Footer ── */}
+        <footer className={`mt-12 px-4 md:px-10 py-8 border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-emerald-500 flex items-center justify-center text-white font-black text-sm">PP</div>
+              <div>
+                <p className={`font-bold text-sm ${isDark ? 'text-white' : 'text-slate-800'}`}>Pushkar Pawar</p>
+                <p className="text-slate-400 text-xs">Built with React, Node.js, Prisma & AI</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <a href="mailto:pushkarpawaroff@gmail.com"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-all">
+                <Mail size={14} /> pushkarpawaroff@gmail.com
+              </a>
+              <a href="https://github.com/Pushkar012345" target="_blank" rel="noreferrer"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-all">
+                <GitBranch size={14} /> GitHub
+              </a>
+              <a href="https://www.linkedin.com/in/pushkarpawar314/" target="_blank" rel="noreferrer"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-all">
+                <Link size={14} /> LinkedIn
+              </a>
+            </div>
+            <p className="text-xs text-slate-400">© 2026 AgroPrice Pro · Maharashtra</p>
+          </div>
+        </footer>
       </main>
 
       {/* ── History Modal ── */}
