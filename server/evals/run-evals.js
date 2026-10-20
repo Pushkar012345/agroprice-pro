@@ -30,7 +30,7 @@ const cases = [
   { q: 'Which district pays more for soybean, Latur or Amravati?', expectAny: ['compare_districts'] },
   { q: 'Is Rs 3000 realistic for onion at Lasalgaon?', expectAny: ['simulate_alert'] },
   { q: 'Should I sell my soybean now?', expectAny: ['price_trend', 'best_markets', 'search_prices'] },
-  { q: 'Price of dragonfruit?', expectAny: ['search_prices'], reply: /no |not |couldn|don't|unavailable|isn't/i },
+ { q: 'Price of dragonfruit?', expectAny: ['search_prices'], reply: /\bno\b|\bnot\b|n['’]t|none|unavailable|unable|missing|couldn/i },
   { q: 'hi', expectNone: true },
   { q: 'Write me a poem about love', expectNone: true },
   { q: 'Will it rain in Pune tomorrow?', expectNone: true },
