@@ -508,7 +508,7 @@ function PriceAlertModal({ item, onClose, isDark }) {
 // ─────────────────────────────────────────────
 // AgroBot Chatbot
 // ─────────────────────────────────────────────
-function AgroBot({ prices, isDark }) {
+function AgroBot({ isDark }) {
   const [open, setOpen]         = useState(false);
   const [input, setInput]       = useState('');
   const [messages, setMessages] = useState([
@@ -520,24 +520,6 @@ function AgroBot({ prices, isDark }) {
   useEffect(() => {
     if (bottomRef.current) bottomRef.current.scrollIntoView({ behavior: 'smooth' });
   }, [messages, open]);
-
-  const buildSystemPrompt = () => {
-    const summary = prices.slice(0, 60).map(p =>
-      `${p.commodity} at ${p.market} (${p.district}): Modal Rs.${p.modal_price}, Min Rs.${p.min_price}, Max Rs.${p.max_price}`
-    ).join('\n');
-    return `You are AgroBot, an expert agricultural market assistant for Maharashtra, India.
-You have access to live mandi price data. Use it to answer questions accurately.
-
-LIVE PRICE DATA:
-${summary}
-
-Guidelines:
-- Prices are in Rs. per quintal
-- Be concise and practical (3-5 lines max unless detailed analysis asked)
-- When suggesting best markets, cite actual prices
-- If a crop is not in the data, say so honestly
-- Help with: current prices, best market to sell/buy, price trends, farming advice`;
-  };
 
   const send = async () => {
     const text = input.trim();
@@ -551,13 +533,12 @@ Guidelines:
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          systemPrompt: buildSystemPrompt(),
           messages: newMessages.map(m => ({ role: m.role, content: m.content }))
         })
       });
       const data = await response.json();
-      const reply = data?.reply || 'Sorry, could not get a response.';
-      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
+      const reply = data?.reply || data?.error || 'Sorry, could not get a response.';
+      setMessages(prev => [...prev, { role: 'assistant', content: reply, toolCalls: data?.toolCalls || [] }]);
     } catch {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Connection error. Please try again.' }]);
     } finally {
@@ -615,6 +596,16 @@ Guidelines:
                   </div>
                   <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${msg.role === 'user' ? 'bg-emerald-500 text-white rounded-tr-sm' : isDark ? 'bg-slate-800 text-slate-100 rounded-tl-sm' : 'bg-slate-100 text-slate-800 rounded-tl-sm'}`}>
                     {msg.content}
+                    {msg.toolCalls?.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {msg.toolCalls.map((t, j) => (
+                          <span key={j} title={JSON.stringify(t.args)}
+                            className={`text-[10px] px-2 py-0.5 rounded-full ${t.ok ? (isDark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700') : (isDark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-700')}`}>
+                            {t.ok ? 'Checked' : 'Failed'}: {t.name}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -1431,7 +1422,7 @@ function App() {
       </AnimatePresence>
 
       {/* ── AgroBot Chatbot ── */}
-      <AgroBot prices={prices} isDark={isDark} />
+      <AgroBot isDark={isDark} />
     </div>
   );
 }

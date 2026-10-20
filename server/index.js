@@ -195,26 +195,32 @@ app.get('/api/sync', rateLimit({ windowMs: 60 * 60 * 1000, max: 10, message: { e
   }
 });
 
-// 6. AgroBot Chat (Groq)
+// 6. AgroBot Chat (Groq, tool-calling agent)
 const Groq = require('groq-sdk');
+const { runAgent } = require('./agent/agent');
+const { createPrismaRepo } = require('./agent/repo');
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const agentRepo = createPrismaRepo(prisma);
 
 app.post('/api/chat', rateLimit({ windowMs: 60 * 1000, max: 15, message: { error: 'Chat rate limit reached.' } }), async (req, res) => {
   try {
-    const { messages, systemPrompt } = req.body;
+    // The client can no longer send a system prompt; it lives on the server.
+    const { messages } = req.body;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array required' });
     }
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      max_tokens: 1000,
-      messages: [
-        { role: 'system', content: systemPrompt || 'You are AgroBot, an agricultural assistant for Maharashtra.' },
-        ...messages,
-      ],
+    const { reply, toolCalls, steps } = await runAgent({
+      groq,
+      repo: agentRepo,
+      messages,
+      log: (m) => console.warn('AgroBot:', m),
     });
-    res.json({ reply: completion.choices[0].message.content });
+    console.log(`AgroBot: ${steps} step(s), tools=[${toolCalls.map(t => `${t.name}${t.ok ? '' : '!'}`).join(', ')}]`);
+    res.json({ reply, toolCalls: toolCalls.map(({ name, args, ok, ms }) => ({ name, args, ok, ms })) });
   } catch (err) {
+    if (err.message === 'a user message is required') {
+      return res.status(400).json({ error: err.message });
+    }
     console.error('AgroBot error:', err?.message);
     res.status(500).json({ error: 'Chat failed. Check your GROQ_API_KEY.' });
   }
