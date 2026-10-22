@@ -5,6 +5,7 @@
   "scripts": {
     "test": "node --test",
     "eval": "node evals/run-evals.js",
+    "ingest": "node rag/ingest.js",
     "dev": "node index.js"
   },
   "keywords": [],

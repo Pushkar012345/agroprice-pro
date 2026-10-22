@@ -1,7 +1,7 @@
 // Data-access layer for the agent tools. Tools never touch Prisma directly,
 // so tests can pass an in-memory repo and production passes the Prisma one.
 
-function createPrismaRepo(prisma) {
+function createPrismaRepo(prisma, { knowledge } = {}) {
   return {
     // Latest price rows, optionally filtered. Case-insensitive "contains" on
     // commodity/market (users type "onion", the data says "Onion"), exact on district.
@@ -20,6 +20,11 @@ function createPrismaRepo(prisma) {
       if (sinceDate) where.recordedAt = { gte: sinceDate };
       return prisma.priceHistory.findMany({ where, orderBy: { recordedAt: 'asc' } });
     },
+
+    // RAG: only present when a knowledge base (embedder + vector store) is configured.
+    ...(knowledge && {
+      searchKnowledge: (query, { topK } = {}) => knowledge.search(query, { topK }),
+    }),
   };
 }
 

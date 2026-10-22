@@ -203,6 +203,38 @@ const tools = [
     },
   },
   {
+    name: 'search_knowledge',
+    description:
+      'Look up background knowledge: MSP, APMC mandis and e-NAM, how to read mandi prices (min/max/modal, quintal), storage and selling-timing guidance. NOT for live prices or trends: use the price tools for those.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The question or topic, in plain words, e.g. "does onion have MSP"' },
+        top_k: { type: 'integer', description: 'How many passages, 1-5, default 3' },
+      },
+      required: ['query'],
+    },
+    validate: (a) => ({
+      query: str(a.query, 'query', { max: 300 }),
+      top_k: int(a.top_k, 'top_k', { min: 1, max: 5, def: 3 }),
+    }),
+    async run(args, repo) {
+      if (!repo.searchKnowledge) return { found: false, message: 'The knowledge base is not available right now.' };
+      const hits = await repo.searchKnowledge(args.query, { topK: args.top_k });
+      if (hits.length === 0) return { found: false, message: 'No relevant passage in the knowledge base.' };
+      return {
+        found: true,
+        passages: hits.map((h) => ({
+          source: h.source,
+          title: h.title,
+          url: h.url || undefined,
+          text: h.content,
+          score: Math.round(h.score * 100) / 100,
+        })),
+      };
+    },
+  },
+  {
     name: 'simulate_alert',
     description:
       'Check how often, in the history window, a market price crossed a target. Use when someone asks if a target price is realistic.',

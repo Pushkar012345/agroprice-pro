@@ -1,7 +1,7 @@
 // Live evaluation: runs real questions through the agent (real Groq model + your
 // real database) and checks WHICH tools it chose. Run it yourself:
 //   cd server && npm run eval
-// Needs DATABASE_URL and GROQ_API_KEY in server/.env. Costs a few dozen Groq calls.
+// Needs DATABASE_URL, GROQ_API_KEY and GEMINI_API_KEY in server/.env (run `npm run ingest` first). Costs a few dozen Groq calls.
 
 require('dotenv').config();
 const { Pool } = require('pg');
@@ -10,11 +10,18 @@ const { PrismaClient } = require('@prisma/client');
 const Groq = require('groq-sdk');
 const { runAgent, SYSTEM_PROMPT } = require('../agent/agent');
 const { createPrismaRepo } = require('../agent/repo');
+const { createGeminiEmbedder } = require('../rag/embeddings');
+const { createPgVectorStore } = require('../rag/store');
+const { createKnowledge } = require('../rag/knowledge');
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const repo = createPrismaRepo(prisma);
+const knowledge = process.env.GEMINI_API_KEY
+  ? createKnowledge({ embedder: createGeminiEmbedder({ apiKey: process.env.GEMINI_API_KEY }), store: createPgVectorStore(prisma) })
+  : undefined;
+if (!knowledge) console.warn('GEMINI_API_KEY not set: knowledge cases will fail.');
+const repo = createPrismaRepo(prisma, { knowledge });
 
 // expectAny: at least one of these tools must be called. expectNone: no tool may be called.
 // args: every key must match on the first call of an expected tool. reply/forbid: regex checks.
@@ -31,6 +38,11 @@ const cases = [
   { q: 'Is Rs 3000 realistic for onion at Lasalgaon?', expectAny: ['simulate_alert'] },
   { q: 'Should I sell my soybean now?', expectAny: ['price_trend', 'best_markets', 'search_prices'] },
  { q: 'Price of dragonfruit?', expectAny: ['search_prices'], reply: /\bno\b|\bnot\b|n['’]t|none|unavailable|unable|missing|couldn/i },
+  { q: 'What is MSP?', expectAny: ['search_knowledge'], reply: /\[msp-basics\]/ },
+  { q: 'Does onion have an MSP?', expectAny: ['search_knowledge'], reply: /\bno\b|\bnot\b|n['’]t/i },
+  { q: 'What does modal price mean?', expectAny: ['search_knowledge'], reply: /\[reading-mandi-prices\]/ },
+  { q: 'How does e-NAM work?', expectAny: ['search_knowledge'] },
+  { q: 'What is the current MSP of wheat in rupees?', expectAny: ['search_knowledge'], forbid: /Rs\.? ?2[,]?\d{3}/ },
   { q: 'hi', expectNone: true },
   { q: 'Write me a poem about love', expectNone: true },
   { q: 'Will it rain in Pune tomorrow?', expectNone: true },

@@ -33,3 +33,19 @@ model PriceHistory {
 
   @@index([marketPriceId])
 }
+
+// RAG knowledge base. Read/written with raw SQL (see rag/store.js) because Prisma
+// has no native pgvector type. The dimension (768) must match EMBED_DIMS.
+model KnowledgeChunk {
+  id          Int                          @id @default(autoincrement())
+  source      String
+  title       String
+  url         String?
+  chunkIndex  Int
+  content     String
+  embedding   Unsupported("vector(768)")
+  createdAt   DateTime                     @default(now())
+
+  @@unique([source, chunkIndex])
+  @@index([source])
+}

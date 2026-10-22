@@ -200,7 +200,21 @@ const Groq = require('groq-sdk');
 const { runAgent } = require('./agent/agent');
 const { createPrismaRepo } = require('./agent/repo');
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const agentRepo = createPrismaRepo(prisma);
+
+// RAG is optional: without GEMINI_API_KEY the agent still works, minus search_knowledge.
+let knowledge;
+if (process.env.GEMINI_API_KEY) {
+  const { createGeminiEmbedder } = require('./rag/embeddings');
+  const { createPgVectorStore } = require('./rag/store');
+  const { createKnowledge } = require('./rag/knowledge');
+  knowledge = createKnowledge({
+    embedder: createGeminiEmbedder({ apiKey: process.env.GEMINI_API_KEY }),
+    store: createPgVectorStore(prisma),
+  });
+} else {
+  console.warn('GEMINI_API_KEY not set: knowledge search (RAG) disabled.');
+}
+const agentRepo = createPrismaRepo(prisma, { knowledge });
 
 app.post('/api/chat', rateLimit({ windowMs: 60 * 1000, max: 15, message: { error: 'Chat rate limit reached.' } }), async (req, res) => {
   try {
