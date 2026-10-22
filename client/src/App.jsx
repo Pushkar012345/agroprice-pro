@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
+import { streamChat } from './sse';
 import * as ss from 'simple-statistics';
 import {
   LayoutDashboard, TrendingUp, Search, Loader2,
@@ -9,7 +10,7 @@ import {
   ArrowUpDown, Flame, TrendingDown, Minus, SlidersHorizontal,
   Sun, Moon, GitCompare, Bell, BellOff, ChevronUp, ChevronDown,
   CheckCircle2, AlertTriangle, Info, MessageSquare, Send, Bot, User,
-  GitBranch, Link, Mail, ExternalLink
+  GitBranch, Link, Mail, ExternalLink, BookOpen
 } from 'lucide-react';
 import {
   XAxis, YAxis, CartesianGrid, Tooltip,
@@ -508,6 +509,35 @@ function PriceAlertModal({ item, onClose, isDark }) {
 // ─────────────────────────────────────────────
 // AgroBot Chatbot
 // ─────────────────────────────────────────────
+const TOOL_STATUS = {
+  search_prices: 'Checking prices…',
+  best_markets: 'Finding the best markets…',
+  price_trend: 'Analysing the price trend…',
+  compare_districts: 'Comparing districts…',
+  simulate_alert: 'Simulating the alert…',
+  search_knowledge: 'Searching the knowledge base…',
+};
+
+// Renders reply text; [source-id] citations that came from the knowledge tool become small badges.
+function MessageText({ text, sources = [], isDark }) {
+  if (!sources.length) return text;
+  const known = sources.map((x) => x.toLowerCase());
+  const parts = text.split(/(\[\s*[A-Za-z0-9][A-Za-z0-9\u2010-\u2015\u2212-]*\s*\])/g);
+  return parts.map((part, i) => {
+    const m = part.match(/^\[\s*(.+?)\s*\]$/);
+    const id = m && m[1].replace(/[\u2010-\u2015\u2212]/g, '-').toLowerCase();
+    if (id && known.includes(id)) {
+      return (
+        <span key={i} title={`Source: ${id}`}
+          className={`inline-flex items-center gap-1 align-middle mx-0.5 text-[10px] px-2 py-0.5 rounded-full ${isDark ? 'bg-sky-900/50 text-sky-300' : 'bg-sky-100 text-sky-700'}`}>
+          <BookOpen size={10} />{id.replace(/-/g, ' ')}
+        </span>
+      );
+    }
+    return part;
+  });
+}
+
 function AgroBot({ isDark }) {
   const [open, setOpen]         = useState(false);
   const [input, setInput]       = useState('');
@@ -524,24 +554,44 @@ function AgroBot({ isDark }) {
   const send = async () => {
     const text = input.trim();
     if (!text || loading) return;
-    const newMessages = [...messages, { role: 'user', content: text }];
-    setMessages(newMessages);
+    const history = [...messages, { role: 'user', content: text }]
+      .filter(m => m.content?.trim())
+      .map(m => ({ role: m.role, content: m.content }));
+    setMessages(prev => [
+      ...prev,
+      { role: 'user', content: text },
+      { role: 'assistant', content: '', toolCalls: [], sources: [], status: 'Thinking…', streaming: true },
+    ]);
     setInput('');
     setLoading(true);
+
+    // Update only the assistant message that is currently streaming (always the last one).
+    const patch = (fn) => setMessages(prev => {
+      const copy = prev.slice();
+      copy[copy.length - 1] = fn(copy[copy.length - 1]);
+      return copy;
+    });
+
     try {
-      const response = await fetch(`${API}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: newMessages.map(m => ({ role: m.role, content: m.content }))
-        })
+      await streamChat(`${API}/api/chat/stream`, { messages: history }, (ev) => {
+        if (ev.type === 'token') patch(m => ({ ...m, content: m.content + ev.text, status: '' }));
+        else if (ev.type === 'reset') patch(m => ({ ...m, content: '', status: 'Thinking…' }));
+        else if (ev.type === 'tool_start') patch(m => ({ ...m, status: TOOL_STATUS[ev.name] || 'Working…' }));
+        else if (ev.type === 'tool_end') patch(m => ({
+          ...m,
+          toolCalls: [...m.toolCalls, { name: ev.name, ok: ev.ok, ms: ev.ms }],
+          sources: [...new Set([...m.sources, ...(ev.sources || [])])],
+          status: 'Thinking…',
+        }));
+        else if (ev.type === 'done') patch(m => ({ ...m, content: ev.reply, toolCalls: ev.toolCalls || m.toolCalls, status: '', streaming: false }));
+        else if (ev.type === 'error') patch(m => ({ ...m, content: m.content || ev.message, status: '', streaming: false }));
       });
-      const data = await response.json();
-      const reply = data?.reply || data?.error || 'Sorry, could not get a response.';
-      setMessages(prev => [...prev, { role: 'assistant', content: reply, toolCalls: data?.toolCalls || [] }]);
-    } catch {
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Connection error. Please try again.' }]);
+    } catch (e) {
+      const msg = e.message && e.message !== 'Failed to fetch' ? e.message : 'Connection error. Please try again.';
+      patch(m => ({ ...m, content: m.content || msg }));
     } finally {
+      // Safety net: if the stream ended without a "done" event, never leave a stuck bubble.
+      patch(m => ({ ...m, content: m.content || 'Sorry, could not get a response.', status: '', streaming: false }));
       setLoading(false);
     }
   };
@@ -595,7 +645,18 @@ function AgroBot({ isDark }) {
                     {msg.role === 'user' ? <User size={14} className="text-white" /> : <Bot size={14} className={isDark ? 'text-emerald-400' : 'text-emerald-600'} />}
                   </div>
                   <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${msg.role === 'user' ? 'bg-emerald-500 text-white rounded-tr-sm' : isDark ? 'bg-slate-800 text-slate-100 rounded-tl-sm' : 'bg-slate-100 text-slate-800 rounded-tl-sm'}`}>
-                    {msg.content}
+                    {msg.content
+                      ? <MessageText text={msg.content} sources={msg.sources} isDark={isDark} />
+                      : msg.streaming && (
+                        <div className="flex items-center gap-2">
+                          <span className="flex gap-1 items-center">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                          </span>
+                          <span className="text-xs opacity-70">{msg.status}</span>
+                        </div>
+                      )}
                     {msg.toolCalls?.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1">
                         {msg.toolCalls.map((t, j) => (
@@ -609,20 +670,6 @@ function AgroBot({ isDark }) {
                   </div>
                 </div>
               ))}
-              {loading && (
-                <div className="flex gap-2">
-                  <div className={`w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center ${isDark ? 'bg-slate-700' : 'bg-slate-100'}`}>
-                    <Bot size={14} className={isDark ? 'text-emerald-400' : 'text-emerald-600'} />
-                  </div>
-                  <div className={`rounded-2xl rounded-tl-sm px-4 py-3 ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>
-                    <div className="flex gap-1 items-center">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-                    </div>
-                  </div>
-                </div>
-              )}
               <div ref={bottomRef} />
             </div>
 

@@ -197,7 +197,7 @@ app.get('/api/sync', rateLimit({ windowMs: 60 * 60 * 1000, max: 10, message: { e
 
 // 6. AgroBot Chat (Groq, tool-calling agent)
 const Groq = require('groq-sdk');
-const { runAgent } = require('./agent/agent');
+const { runAgent, sanitizeMessages } = require('./agent/agent');
 const { createPrismaRepo } = require('./agent/repo');
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -216,7 +216,9 @@ if (process.env.GEMINI_API_KEY) {
 }
 const agentRepo = createPrismaRepo(prisma, { knowledge });
 
-app.post('/api/chat', rateLimit({ windowMs: 60 * 1000, max: 15, message: { error: 'Chat rate limit reached.' } }), async (req, res) => {
+const chatLimiter = rateLimit({ windowMs: 60 * 1000, max: 15, message: { error: 'Chat rate limit reached.' } });
+
+app.post('/api/chat', chatLimiter, async (req, res) => {
   try {
     // The client can no longer send a system prompt; it lives on the server.
     const { messages } = req.body;
@@ -238,6 +240,48 @@ app.post('/api/chat', rateLimit({ windowMs: 60 * 1000, max: 15, message: { error
     console.error('AgroBot error:', err?.message);
     res.status(500).json({ error: 'Chat failed. Check your GROQ_API_KEY.' });
   }
+});
+
+// Streaming version of /api/chat (Server-Sent Events). One JSON event per "data:" line:
+//   token, reset, tool_start, tool_end, done, error
+app.post('/api/chat/stream', chatLimiter, async (req, res) => {
+  let messages;
+  try {
+    messages = sanitizeMessages(req.body?.messages);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  res.set({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no', // stop nginx-style proxies (e.g. Render) from buffering the stream
+  });
+  res.flushHeaders();
+
+  let closed = false;
+  res.on('close', () => { closed = true; }); // browser left: stop spending tokens
+  const send = (event) => { if (!closed) res.write(`data: ${JSON.stringify(event)}\n\n`); };
+
+  try {
+    const out = await runAgent({
+      groq,
+      repo: agentRepo,
+      messages,
+      log: (m) => console.warn('AgroBot:', m),
+      onEvent: send,
+      isCancelled: () => closed,
+    });
+    if (!out.cancelled) {
+      console.log(`AgroBot(stream): ${out.steps} step(s), tools=[${out.toolCalls.map(t => `${t.name}${t.ok ? '' : '!'}`).join(', ')}]`);
+      send({ type: 'done', reply: out.reply, toolCalls: out.toolCalls.map(({ name, args, ok, ms, sources }) => ({ name, args, ok, ms, sources })) });
+    }
+  } catch (err) {
+    console.error('AgroBot stream error:', err?.message);
+    send({ type: 'error', message: 'Chat failed. Check your GROQ_API_KEY.' });
+  }
+  res.end();
 });
 
 const PORT = process.env.PORT || 5000;

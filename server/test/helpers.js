@@ -30,6 +30,19 @@ const repo = {
   },
 };
 
+// Turns a scripted message into streaming chunks: text in 5-char pieces, tool calls as fragments.
+async function* fakeStream(msg) {
+  for (const piece of (msg.content || '').match(/[\s\S]{1,5}/g) || []) yield { choices: [{ delta: { content: piece } }] };
+  const calls = msg.tool_calls || [];
+  for (let index = 0; index < calls.length; index++) {
+    const { id, function: fn } = calls[index];
+    const half = Math.ceil(fn.arguments.length / 2);
+    yield { choices: [{ delta: { tool_calls: [{ index, id, function: { name: fn.name, arguments: '' } }] } }] };
+    yield { choices: [{ delta: { tool_calls: [{ index, function: { arguments: fn.arguments.slice(0, half) } }] } }] };
+    yield { choices: [{ delta: { tool_calls: [{ index, function: { arguments: fn.arguments.slice(half) } }] } }] };
+  }
+}
+
 // A fake Groq client that plays back scripted responses and records requests.
 // Each script item is a message object, or a function/Error to throw.
 function fakeGroq(script) {
@@ -43,6 +56,7 @@ function fakeGroq(script) {
           requests.push(JSON.parse(JSON.stringify(params)));
           const item = script[Math.min(i++, script.length - 1)];
           if (item instanceof Error) throw item;
+          if (params.stream) return fakeStream(item);
           return { choices: [{ message: item }] };
         },
       },
