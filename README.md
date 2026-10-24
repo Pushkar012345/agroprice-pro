@@ -51,6 +51,7 @@ AgroPrice Pro is a full-stack web application that provides live agricultural co
 | Jina / Cohere reranker (optional) | Second-stage reranking |
 | Langfuse | LLM tracing, token / latency / cost monitoring |
 | Model Context Protocol SDK | MCP server for Claude Desktop / Claude Code |
+| LangChain.js (core, google-genai, langgraph) | Retriever + embeddings, graph agent engine |
 | express-rate-limit | API Security & Rate Limiting |
 
 ### Deployment
@@ -145,10 +146,12 @@ npm run ingest -- --query "does onion have MSP" --mode vector    # inspect score
 
 Settings (`server/.env`): `RAG_MODE` (`hybrid` default, `vector`, `keyword`), `RAG_MIN_SCORE`, `RAG_CANDIDATES`, and for reranking `RERANK_API_KEY`, `RERANK_PROVIDER` (`jina` or `cohere`), `RERANK_MODEL`.
 
+**LangChain.js version of retrieval:** `rag/langchain-retriever.js` implements the same vector retrieval with LangChain's own building blocks: `GoogleGenerativeAIEmbeddings`, a custom `BaseRetriever` (so `retriever.invoke(query)` returns `Document[]` and composes with LangChain chains), and the same relevance threshold. It runs on the existing pgvector table. Select it with `RAG_ENGINE=langchain`; the default stays the native engine, which also has hybrid search and reranking. Ingestion always uses the native embedder, and the eval below compares both on the same questions.
+
 **Retrieval eval:** 21 answerable questions (exact-term and paraphrased) plus 6 out-of-scope ones, each answerable question naming the chunk that holds the answer.
 
 ```bash
-npm run eval:retrieval      # vector vs keyword vs hybrid vs hybrid+rerank on your real DB (needs GEMINI_API_KEY)
+npm run eval:retrieval      # vector vs LangChain vector vs keyword vs hybrid vs hybrid+rerank on your real DB (needs GEMINI_API_KEY)
 ```
 
 It prints Hit@1, Hit@3, MRR, "usable after threshold" and correct-refusal rate per setup. Results are not tabulated here yet: run it against your own data and paste the table.
