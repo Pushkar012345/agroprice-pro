@@ -199,7 +199,12 @@ app.get('/api/sync', rateLimit({ windowMs: 60 * 60 * 1000, max: 10, message: { e
 const Groq = require('groq-sdk');
 const { runAgent, sanitizeMessages } = require('./agent/agent');
 const { createPrismaRepo } = require('./agent/repo');
+const { createTracerFromEnv } = require('./observability/tracing');
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+// Tracing is optional: without LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY this is a no-op.
+const tracer = createTracerFromEnv();
+console.log(tracer.enabled ? 'Langfuse tracing enabled.' : 'LANGFUSE keys not set: tracing disabled.');
 
 // RAG is optional: without GEMINI_API_KEY the agent still works, minus search_knowledge.
 let knowledge;
@@ -211,6 +216,13 @@ if (process.env.GEMINI_API_KEY) {
     embedder: createGeminiEmbedder({ apiKey: process.env.GEMINI_API_KEY }),
     store: createPgVectorStore(prisma),
   });
+  const { createRerankerFromEnv } = require('./rag/rerank');
+const reranker = createRerankerFromEnv();
+knowledge = createKnowledge({
+  embedder: createGeminiEmbedder({ apiKey: process.env.GEMINI_API_KEY }),
+  store: createPgVectorStore(prisma),
+  reranker,                       // <- new line
+});
 } else {
   console.warn('GEMINI_API_KEY not set: knowledge search (RAG) disabled.');
 }
@@ -228,6 +240,7 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
     const { reply, toolCalls, steps } = await runAgent({
       groq,
       repo: agentRepo,
+      tracer,
       messages,
       log: (m) => console.warn('AgroBot:', m),
     });
@@ -268,6 +281,7 @@ app.post('/api/chat/stream', chatLimiter, async (req, res) => {
     const out = await runAgent({
       groq,
       repo: agentRepo,
+      tracer,
       messages,
       log: (m) => console.warn('AgroBot:', m),
       onEvent: send,
@@ -285,4 +299,13 @@ app.post('/api/chat/stream', chatLimiter, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// Render sends SIGTERM on deploy/restart: send any buffered traces before exiting.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.once(sig, async () => {
+    server.close();
+    await tracer.shutdown();
+    process.exit(0);
+  });
+}

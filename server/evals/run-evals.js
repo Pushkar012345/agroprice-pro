@@ -8,7 +8,10 @@ const { Pool } = require('pg');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const { PrismaClient } = require('@prisma/client');
 const Groq = require('groq-sdk');
-const { runAgent, SYSTEM_PROMPT } = require('../agent/agent');
+const { runAgent: runPlainAgent, SYSTEM_PROMPT } = require('../agent/agent');
+const { runAgentGraph } = require('../agent/graph');
+// AGENT_ENGINE=langgraph npm run eval  -> evaluates the LangGraph agent
+const runAgent = process.env.AGENT_ENGINE === 'langgraph' ? ({ groq: _g, ...rest }) => runAgentGraph(rest) : runPlainAgent;
 const { createPrismaRepo } = require('../agent/repo');
 const { createGeminiEmbedder } = require('../rag/embeddings');
 const { createPgVectorStore } = require('../rag/store');
@@ -51,6 +54,25 @@ const cases = [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Groq's free tier allows ~8000 tokens/minute. On a 429, wait as long as Groq says, then retry.
+const isRateLimit = (e) => e?.status === 429 || /rate limit|429/i.test(e?.message || '');
+function waitMs(e) {
+  const m = String(e?.message || '').match(/try again in ([\d.]+)(ms|s)/i);
+  if (!m) return 10000;
+  return Math.ceil(Number(m[1]) * (m[2].toLowerCase() === 'ms' ? 1 : 1000)) + 1500;
+}
+async function runWithRetry(q) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await runAgent({ groq, repo, messages: [{ role: 'user', content: q }] });
+    } catch (e) {
+      if (!isRateLimit(e) || attempt >= 4) throw e;
+      console.log(`        (rate limited, waiting ${Math.round(waitMs(e) / 1000)}s, retry ${attempt + 1})`);
+      await sleep(waitMs(e));
+    }
+  }
+}
+
 function judge(c, out) {
   const used = out.toolCalls.map((t) => t.name);
   const problems = [];
@@ -67,12 +89,13 @@ function judge(c, out) {
 }
 
 (async () => {
+  console.log(`Engine: ${process.env.AGENT_ENGINE === 'langgraph' ? 'langgraph' : 'plain'}\n`);
   let pass = 0, totalMs = 0, totalSteps = 0;
   for (const c of cases) {
     const t0 = Date.now();
     let out, problems;
     try {
-      out = await runAgent({ groq, repo, messages: [{ role: 'user', content: c.q }] });
+      out = await runWithRetry(c.q);
       problems = judge(c, out);
     } catch (e) {
       out = { toolCalls: [], reply: '', steps: 0 };
@@ -83,7 +106,8 @@ function judge(c, out) {
     if (!problems.length) pass++;
     console.log(`${problems.length ? 'FAIL' : 'PASS'}  ${String(ms).padStart(5)}ms  [${out.toolCalls.map((t) => t.name)}]  ${c.q}`);
     problems.forEach((p) => console.log(`        - ${p}`));
-    await sleep(2500); // stay under Groq free-tier rate limits
+    if (problems.length && out.reply) console.log(`        reply: ${out.reply.replace(/\s+/g, ' ').slice(0, 300)}`);
+    await sleep(6000); // stay under Groq free-tier rate limits
   }
   console.log(`\n${pass}/${cases.length} passed (${Math.round((pass / cases.length) * 100)}%)  avg ${Math.round(totalMs / cases.length)}ms, avg ${(totalSteps / cases.length).toFixed(1)} model calls`);
   await prisma.$disconnect();

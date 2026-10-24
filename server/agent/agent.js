@@ -3,6 +3,7 @@
 //   until the model answers in plain text (or we hit the step limit).
 
 const { toolsByName, toolSchemas, ToolInputError } = require('./tools');
+const { noopTracer, runWithTrace } = require('../observability/tracing');
 
 // llama-3.3-70b-versatile was shut down by Groq on 2026-08-16 (free/developer tiers).
 // openai/gpt-oss-120b is Groq's recommended replacement and supports tool calling.
@@ -56,19 +57,6 @@ const isToolUseFailure = (err) =>
   err && (err.status === 400 || err.status === undefined) &&
   /tool_use_failed|failed to call a function/i.test(JSON.stringify(err.error || '') + (err.message || ''));
 
-async function callModel(groq, params, log) {
-  try {
-    return await groq.chat.completions.create(params);
-  } catch (err) {
-    // Llama sometimes emits a malformed tool call. Retry once before giving up.
-    if (isToolUseFailure(err)) {
-      log?.('tool_use_failed, retrying once');
-      return groq.chat.completions.create(params);
-    }
-    throw err;
-  }
-}
-
 // Models sometimes write "[ msp‑basics ]" (spaces, non-breaking hyphen). Make it "[msp-basics]".
 function normalizeCitations(text) {
   return text.replace(/\[\s*([A-Za-z0-9]+(?:[\u2010-\u2015\u2212-][A-Za-z0-9]+)*)\s*\]/g,
@@ -80,9 +68,12 @@ function normalizeCitations(text) {
 async function streamModel(groq, params, { onToken, isCancelled }) {
   const stream = await groq.chat.completions.create({ ...params, stream: true });
   let content = '';
+  let usage;
   const calls = [];
   for await (const chunk of stream) {
     if (isCancelled?.()) break;
+    // Groq reports token usage on the last chunk (x_groq.usage); OpenAI-style APIs use chunk.usage.
+    usage = chunk.x_groq?.usage || chunk.usage || usage;
     const d = chunk.choices?.[0]?.delta;
     if (!d) continue;
     if (d.content) { content += d.content; onToken(d.content); }
@@ -94,8 +85,12 @@ async function streamModel(groq, params, { onToken, isCancelled }) {
     }
   }
   const tool_calls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${i}` }));
-  return { role: 'assistant', content, tool_calls };
+  return { msg: { role: 'assistant', content, tool_calls }, usage };
 }
+
+// {prompt_tokens, completion_tokens, total_tokens} -> {input, output, total} for tracing.
+const toUsage = (u) => (u ? { input: u.prompt_tokens, output: u.completion_tokens, total: u.total_tokens } : undefined);
+const clip = (text, n = 4000) => (typeof text === 'string' && text.length > n ? `${text.slice(0, n)}...[truncated]` : text);
 
 async function executeToolCall(call, repo) {
   const started = Date.now();
@@ -132,27 +127,81 @@ async function executeToolCall(call, repo) {
 //   {type:'token', text}  {type:'reset'}  {type:'tool_start', name}
 //   {type:'tool_end', name, ok, ms, sources?}
 // isCancelled (optional) lets the caller stop work early, e.g. the browser disconnected.
-async function runAgent({ groq, repo, messages, model = MODEL, maxSteps = MAX_STEPS, log, onEvent, isCancelled }) {
-  const convo = [{ role: 'system', content: SYSTEM_PROMPT }, ...sanitizeMessages(messages)];
+// tracer (optional) records the run for observability (see observability/tracing.js).
+async function runAgent({ groq, repo, messages, model = MODEL, maxSteps = MAX_STEPS, log, onEvent, isCancelled, tracer = noopTracer }) {
+  const clean = sanitizeMessages(messages); // throws on bad input before any trace exists
+  const trace = tracer.trace({
+    name: 'agrobot-chat',
+    input: clean[clean.length - 1].content,
+    metadata: { model, streaming: !!onEvent, historyLength: clean.length },
+    tags: ['agrobot', onEvent ? 'stream' : 'json'],
+  });
+  try {
+    // runWithTrace lets code deep in the stack (RAG retrieval) add child spans to this trace.
+    const out = await runWithTrace(trace, () => runLoop({ groq, repo, clean, model, maxSteps, log, onEvent, isCancelled, trace }));
+    trace.end({
+      output: out.reply,
+      metadata: { steps: out.steps, tools: out.toolCalls.map((t) => t.name), hitStepLimit: !!out.hitStepLimit, cancelled: !!out.cancelled },
+    });
+    return out;
+  } catch (err) {
+    trace.end({ output: null, metadata: { error: err?.message } });
+    throw err;
+  }
+}
+
+async function runLoop({ groq, repo, clean, model, maxSteps, log, onEvent, isCancelled, trace }) {
+  const convo = [{ role: 'system', content: SYSTEM_PROMPT }, ...clean];
   const toolCalls = [];
   const base = { model, temperature: 0.2, tools: toolSchemas, ...modelParams(model) };
 
-  const ask = async (params) => {
-    if (!onEvent) return (await callModel(groq, params, log)).choices[0].message;
-    const run = () => streamModel(groq, params, { onToken: (text) => onEvent({ type: 'token', text }), isCancelled });
+  // One generation per model call (a retry after a malformed tool call stays inside the same one).
+  const ask = async (params, label) => {
+    const { tools, messages: sent, ...modelParameters } = params; // log settings, not the big tool schema
+    const gen = trace.generation({ name: label, model: params.model, input: sent.slice(), modelParameters });
+    let retried = false;
     try {
-      return await run();
+      let msg, usage;
+      if (!onEvent) {
+        let res;
+        try {
+          res = await groq.chat.completions.create(params);
+        } catch (err) {
+          if (!isToolUseFailure(err)) throw err;
+          retried = true;
+          log?.('tool_use_failed, retrying once');
+          res = await groq.chat.completions.create(params);
+        }
+        msg = res.choices[0].message;
+        usage = res.usage;
+      } else {
+        const run = () => streamModel(groq, params, { onToken: (text) => onEvent({ type: 'token', text }), isCancelled });
+        try {
+          ({ msg, usage } = await run());
+        } catch (err) {
+          if (!isToolUseFailure(err)) throw err;
+          retried = true;
+          log?.('tool_use_failed, retrying once');
+          onEvent({ type: 'reset' });
+          ({ msg, usage } = await run());
+        }
+      }
+      gen.end({
+        output: { content: msg.content || '', tool_calls: (msg.tool_calls || []).map((c) => ({ name: c.function?.name, arguments: c.function?.arguments })) },
+        usage: toUsage(usage),
+        level: retried ? 'WARNING' : undefined,
+        statusMessage: retried ? 'retried after tool_use_failed' : undefined,
+      });
+      return msg;
     } catch (err) {
-      if (!isToolUseFailure(err)) throw err;
-      log?.('tool_use_failed, retrying once');
-      onEvent({ type: 'reset' });
-      return run();
+      gen.end({ level: 'ERROR', statusMessage: err?.message });
+      throw err;
     }
   };
   const finish = (msg) => normalizeCitations((msg.content || '').trim() || 'Sorry, I could not produce an answer.');
 
   for (let step = 0; step < maxSteps; step++) {
-    const msg = await ask({ ...base, messages: convo, tool_choice: 'auto' });
+    const msg = await ask({ ...base, messages: convo, tool_choice: 'auto' }, `llm-step-${step + 1}`);
     if (isCancelled?.()) return { reply: '', toolCalls, steps: step + 1, cancelled: true };
     const calls = (msg.tool_calls || []).slice(0, MAX_CALLS_PER_STEP);
 
@@ -165,7 +214,14 @@ async function runAgent({ groq, repo, messages, model = MODEL, maxSteps = MAX_ST
     convo.push({ role: 'assistant', content: msg.content || '', tool_calls: calls });
     for (const call of calls) {
       onEvent?.({ type: 'tool_start', name: call.function?.name });
+      const span = trace.span({ name: `tool:${call.function?.name}`, input: clip(call.function?.arguments, 1000) });
       const { record, message } = await executeToolCall(call, repo);
+      span.end({
+        output: clip(message.content),
+        level: record.ok ? undefined : 'WARNING',
+        statusMessage: record.error,
+        metadata: { ok: record.ok, ms: record.ms, sources: record.sources },
+      });
       toolCalls.push(record);
       onEvent?.({ type: 'tool_end', name: record.name, ok: record.ok, ms: record.ms, sources: record.sources });
       convo.push(message);
@@ -173,9 +229,12 @@ async function runAgent({ groq, repo, messages, model = MODEL, maxSteps = MAX_ST
   }
 
   // Step limit reached: force a plain-text answer from what we have.
-  const msg = await ask({ ...base, messages: convo, tool_choice: 'none' });
+  const msg = await ask({ ...base, messages: convo, tool_choice: 'none' }, 'llm-final');
   if (isCancelled?.()) return { reply: '', toolCalls, steps: maxSteps, cancelled: true };
   return { reply: finish(msg), toolCalls, steps: maxSteps, hitStepLimit: true };
 }
 
-module.exports = { runAgent, sanitizeMessages, normalizeCitations, modelParams, SYSTEM_PROMPT, MODEL };
+module.exports = {
+  runAgent, executeToolCall, sanitizeMessages, normalizeCitations, modelParams, isToolUseFailure,
+  SYSTEM_PROMPT, MODEL, MAX_STEPS, MAX_CALLS_PER_STEP, MAX_HISTORY, MAX_MESSAGE_CHARS, MAX_TOOL_RESULT_CHARS,
+};

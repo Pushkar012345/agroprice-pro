@@ -1,5 +1,6 @@
 // Load knowledge/*.md into pgvector:   cd server && npm run ingest
 // Try a query and see raw scores:       npm run ingest -- --query "what is MSP"
+//   compare retrieval modes:            npm run ingest -- --query "what is MSP" --mode vector|keyword|hybrid
 // Needs DATABASE_URL and GEMINI_API_KEY in server/.env.
 
 require('dotenv').config();
@@ -11,6 +12,7 @@ const { PrismaClient } = require('@prisma/client');
 const { createGeminiEmbedder } = require('./embeddings');
 const { createPgVectorStore } = require('./store');
 const { createKnowledge } = require('./knowledge');
+const { createRerankerFromEnv } = require('./rerank');
 
 const DIR = path.join(__dirname, '..', 'knowledge');
 
@@ -20,12 +22,18 @@ const DIR = path.join(__dirname, '..', 'knowledge');
   const kb = createKnowledge({
     embedder: createGeminiEmbedder({ apiKey: process.env.GEMINI_API_KEY }),
     store: createPgVectorStore(prisma),
+    reranker: createRerankerFromEnv(),
   });
 
   const qi = process.argv.indexOf('--query');
   if (qi !== -1) {
-    const hits = await kb.search(process.argv[qi + 1] || '', { topK: 5, withScoresBelowThreshold: true });
-    hits.forEach((h) => console.log(`${h.score.toFixed(3)}  [${h.source}#${h.chunkIndex}]  ${h.content.slice(0, 80).replace(/\n/g, ' ')}...`));
+    const mi = process.argv.indexOf('--mode');
+    const hits = await kb.search(process.argv[qi + 1] || '', { topK: 5, withScoresBelowThreshold: true, ...(mi !== -1 && { mode: process.argv[mi + 1] }) });
+    console.log(`mode=${mi !== -1 ? process.argv[mi + 1] : kb.mode}${kb.reranker ? ` rerank=${kb.reranker.provider}` : ''}  (cosine score; rrf/ranks/rerank when available)`);
+    hits.forEach((h) => console.log(
+      `${h.score.toFixed(3)}  [${h.source}#${h.chunkIndex}]` +
+      `${h.ranks ? `  ranks=${JSON.stringify(h.ranks)}` : ''}${h.rerankScore !== undefined ? `  rerank=${h.rerankScore.toFixed(3)}` : ''}  ` +
+      `${h.content.slice(0, 60).replace(/\n/g, ' ')}...`));
   } else {
     const docs = fs.readdirSync(DIR).filter((f) => f.endsWith('.md'))
       .map((f) => ({ filename: f, raw: fs.readFileSync(path.join(DIR, f), 'utf8') }));

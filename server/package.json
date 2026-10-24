@@ -6,13 +6,19 @@
     "test": "node --test",
     "eval": "node evals/run-evals.js",
     "ingest": "node rag/ingest.js",
-    "dev": "node index.js"
+    "dev": "node index.js",
+    "eval:retrieval": "node evals/retrieval-eval.js",
+    "mcp": "node mcp/server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@langchain/core": "^1.2.20",
+    "@langchain/groq": "^1.3.1",
+    "@langchain/langgraph": "^1.5.2",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@prisma/adapter-pg": "^7.7.0",
     "@prisma/client": "^7.7.0",
     "@prisma/config": "^7.7.0",
@@ -22,6 +28,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.3.2",
     "groq-sdk": "^1.1.2",
+    "langfuse": "^3.39.2",
     "pg": "^8.20.0"
   },
   "devDependencies": {
